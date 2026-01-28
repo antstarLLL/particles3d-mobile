@@ -31,6 +31,27 @@
             color: white;
             z-index: 10;
             box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+            transition: transform 0.3s ease, opacity 0.3s ease;
+        }
+
+        #toolbar {
+            position: absolute; top: 12px; left: 12px;
+            display: flex; gap: 8px; z-index: 20;
+        }
+
+        .tool-btn {
+            background: rgba(255, 255, 255, 0.15);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            color: #fff; padding: 8px 10px; border-radius: 8px;
+            font-size: 12px; letter-spacing: 0.5px;
+        }
+
+        .tool-btn:active { transform: scale(0.98); }
+
+        .panel-hidden #ui-panel {
+            transform: translateX(120%);
+            opacity: 0;
+            pointer-events: none;
         }
 
         h2 { margin: 0 0 15px 0; font-size: 18px; text-transform: uppercase; letter-spacing: 1px; color: #00e5ff; }
@@ -76,6 +97,16 @@
             width: 100%; margin-top: 10px; background: transparent; border: 1px solid #00e5ff; color: #00e5ff;
         }
         #fullscreen-btn:hover { background: #00e5ff; color: #000; }
+
+        @media (max-width: 768px) {
+            #ui-panel { width: 220px; top: 64px; right: 12px; padding: 14px; }
+            #camera-preview { width: 120px; height: 90px; bottom: 12px; left: 12px; }
+        }
+
+        @media (orientation: landscape) {
+            #ui-panel { top: 12px; right: 12px; width: 210px; }
+            #toolbar { top: 12px; left: 12px; }
+        }
     </style>
 
     <!-- 引入 Three.js (本地) -->
@@ -97,6 +128,11 @@
     <div id="loader">
         <h1>正在初始化系统...</h1>
         <p>请允许摄像头权限以启用手势控制</p>
+    </div>
+
+    <div id="toolbar">
+        <button id="panel-toggle" class="tool-btn">✕ 隐藏工具栏</button>
+        <button id="orientation-btn" class="tool-btn">切换横竖屏</button>
     </div>
 
     <div id="ui-panel">
@@ -320,6 +356,58 @@
     let handExpansionFactor = 0; // 0 = 正常, 1 = 爆炸/放大
     let isHandDetected = false;
     let currentShape = 'heart';
+    let lastIndexTip = null;
+    let cameraYaw = 0;
+    let cameraPitch = 0;
+    const dragSensitivity = 2.0;
+    let resetHoldFrames = 0;
+    let resetTriggered = false;
+
+    function resetCameraView() {
+        cameraYaw = 0;
+        cameraPitch = 0;
+        camera.rotation.set(0, 0, 0);
+    }
+
+    const panelToggleBtn = document.getElementById('panel-toggle');
+    const orientationBtn = document.getElementById('orientation-btn');
+    let panelHidden = false;
+
+    function updatePanelToggleText() {
+        panelToggleBtn.textContent = panelHidden ? '☰ 显示工具栏' : '✕ 隐藏工具栏';
+    }
+
+    function setPanelHidden(hidden) {
+        panelHidden = hidden;
+        document.body.classList.toggle('panel-hidden', hidden);
+        updatePanelToggleText();
+    }
+
+    function getOrientationLabel() {
+        return window.matchMedia('(orientation: portrait)').matches ? 'portrait' : 'landscape';
+    }
+
+    function updateOrientationButton() {
+        orientationBtn.textContent = getOrientationLabel() === 'portrait' ? '切换横屏' : '切换竖屏';
+    }
+
+    async function toggleOrientation() {
+        const target = getOrientationLabel() === 'portrait' ? 'landscape' : 'portrait';
+        if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
+            try { await document.documentElement.requestFullscreen(); } catch (e) {}
+        }
+        if (screen.orientation && screen.orientation.lock) {
+            try { await screen.orientation.lock(target); } catch (e) {}
+        }
+        document.body.classList.toggle('force-landscape', target === 'landscape');
+        document.body.classList.toggle('force-portrait', target === 'portrait');
+        updateOrientationButton();
+    }
+
+    updateOrientationButton();
+
+    panelToggleBtn.addEventListener('click', () => setPanelHidden(!panelHidden));
+    orientationBtn.addEventListener('click', () => toggleOrientation());
 
     // UI 事件监听
     document.querySelectorAll('.shape-btn').forEach(btn => {
@@ -360,6 +448,7 @@
             // 计算大拇指指尖(4)和食指指尖(8)的距离
             const thumbTip = landmarks[4];
             const indexTip = landmarks[8];
+            const middleTip = landmarks[12];
             
             // 简单的欧几里得距离 (z轴影响较小，主要看xy平面)
             const distance = Math.sqrt(
@@ -377,12 +466,44 @@
             // 平滑处理 (Lerp)
             handExpansionFactor += (factor - handExpansionFactor) * 0.1;
 
+            const resetDistance = Math.sqrt(
+                Math.pow(thumbTip.x - middleTip.x, 2) +
+                Math.pow(thumbTip.y - middleTip.y, 2)
+            );
+
+            if (resetDistance < 0.03) {
+                resetHoldFrames += 1;
+            } else {
+                resetHoldFrames = 0;
+                resetTriggered = false;
+            }
+
+            if (resetHoldFrames > 6 && !resetTriggered) {
+                resetTriggered = true;
+                resetCameraView();
+                lastIndexTip = null;
+            }
+
+            if (lastIndexTip && !resetTriggered) {
+                const dx = indexTip.x - lastIndexTip.x;
+                const dy = indexTip.y - lastIndexTip.y;
+                cameraYaw -= dx * dragSensitivity;
+                cameraPitch -= dy * dragSensitivity;
+                if (cameraPitch > 1.1) cameraPitch = 1.1;
+                if (cameraPitch < -1.1) cameraPitch = -1.1;
+                camera.rotation.set(cameraPitch, cameraYaw, 0);
+            }
+            lastIndexTip = { x: indexTip.x, y: indexTip.y };
+
         } else {
             isHandDetected = false;
             camDot.classList.add('inactive');
             handStatus.textContent = "未检测到手部";
             // 如果没手，慢慢归零
             handExpansionFactor += (0 - handExpansionFactor) * 0.05;
+            lastIndexTip = null;
+            resetHoldFrames = 0;
+            resetTriggered = false;
         }
     }
 
@@ -469,6 +590,7 @@
         camera.aspect = window.innerWidth / window.innerHeight;
         camera.updateProjectionMatrix();
         renderer.setSize(window.innerWidth, window.innerHeight);
+        updateOrientationButton();
     });
 
     animate();
