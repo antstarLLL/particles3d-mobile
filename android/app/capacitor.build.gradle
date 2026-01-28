@@ -7,7 +7,12 @@ android {
   }
 }
 
-apply from: "../capacitor-cordova-android-plugins/cordova.variables.gradle"
+try {
+    apply from: "../capacitor-cordova-android-plugins/cordova.variables.gradle"
+} catch (Throwable t) {
+    // Ignore if file doesn't exist
+}
+
 dependencies {
 
 
